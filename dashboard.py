@@ -24,8 +24,10 @@ import market
 from aquarium import Aquarium
 from games import Games
 
-from config import CFG
+from config import AGENT_SOURCE, CFG
 from i18n import t
+import hook_agents
+import platform_compat
 import parcels
 import parcels_import
 import web_credits
@@ -70,6 +72,9 @@ ARM_SEC = 10  # 길게 한 번 누른 뒤 확인 대기 시간
 MACHINE_POLL_SEC = 60
 STUDIO_POLL_SEC = 5
 REPEAT_WINDOW = 30  # 같은 칸 반복 누름으로 보는 시간(초)
+# Windows · 훅 방식: 깜빡이는 세션의 Windows Terminal 탭을 맨 앞에서 보고 있으면 확인한 것으로 친다 (config "seen_ack": false 로 끔)
+SEEN_ACK = platform_compat.IS_WINDOWS and AGENT_SOURCE == "hooks" and CFG.get("seen_ack", True)
+SEEN_POLL_SEC = 2
 
 
 def signature(s: StudioState) -> tuple:
@@ -144,6 +149,7 @@ class Dashboard:
         self.machines_at = 0.0
         self.raw_studio = StudioState(False, [])  # Herdr 원본 상태
         self.acked: set[tuple[str, str]] = set()  # 눌러서 확인한 알림 (터미널, 상태)
+        self.seen_busy = False  # ack_seen 이 도는 중 (겹쳐 돌지 않게)
         self.last_focus: tuple[str, int, float] = ("", 0, 0.0)  # (스페이스 이름, 누른 횟수, 시각)
         self.row_names: list[str] = []  # 3페이지 가운데 줄 스튜디오 순서
         self.row_lock_until = 0.0
@@ -811,6 +817,20 @@ class Dashboard:
         self.acked &= current
         self.studio = apply_ack(raw, self.acked)
 
+    def ack_seen(self) -> None:
+        """(백그라운드) 깜빡이는 세션의 탭을 맨 앞에서 보고 있으면 덱에서 누른 것처럼 확인 처리한다."""
+        try:
+            terms = hook_agents.seen_terms()
+            raw = self.raw_studio
+            current = set().union(*(alert_keys(w) for w in raw.workspaces)) if raw.workspaces else set()
+            new = {(t, k) for t in terms for k in ("attention", "done")} & current - self.acked
+            if new:
+                self.acked |= new
+                self.set_studio(self.raw_studio)
+                self.render()
+        finally:
+            self.seen_busy = False
+
     # ---- 화면 ----
     def clock_status(self) -> list[tuple[str, str]]:
         """시계 하단 칩: 스튜디오 작업/확인 수 + 지금 여유 있는 LLM."""
@@ -987,6 +1007,11 @@ class Dashboard:
                     if signature(new) != signature(self.raw_studio):
                         self.set_studio(new)
                         dirty = True
+                # 깜빡이는 칸이 있을 때만: 그 세션 탭을 보고 있으면 확인 처리 (백그라운드, 화면 갱신을 막지 않게)
+                if SEEN_ACK and sec % SEEN_POLL_SEC == 0 and not self.seen_busy \
+                        and (self.studio.attention or self.studio.done):
+                    self.seen_busy = True
+                    self.pool.submit(self.ack_seen)
                 if self.pomo.check_finished():  # 타이머 끝: 알림 + 5페이지로
                     notify_done(self.pomo.duration / 60)
                     self.page, dirty = 5, True

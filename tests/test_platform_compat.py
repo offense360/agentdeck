@@ -179,6 +179,38 @@ class WindowsHookTest(unittest.TestCase):
             self.assertEqual(hook_agents._codex_title("th-9"), "Calculate 1+1")
             self.assertEqual(hook_agents._codex_title("nope"), "")
 
+    def test_tab_matches(self):
+        self.assertTrue(pc.tab_matches("◐ jakeparkcolde-agentdeck D200H 포팅", "jakeparkcolde-agentdeck D200H 포팅"))
+        self.assertTrue(pc.tab_matches("geon4 구현 및 검증 진행 | geon4", "geon4 구현 및 검증 진행"))  # Codex
+        self.assertFalse(pc.tab_matches("geon4 구현", "geon4"))  # 앞부분만 같으면 다른 탭
+        self.assertFalse(pc.tab_matches("PowerShell", ""))
+
+    def test_seen_terms_picks_sessions_of_foreground_tab(self):
+        """맨 앞 Windows Terminal 탭에서 도는 세션만 '본 것' 으로 고른다."""
+        import hook_agents
+
+        sessions = {
+            "local:claude-code-a": {"platform": "win32", "agent": "claude-code", "title": "D200H 포팅", "_ssh": None},
+            "local:claude-code-b": {"platform": "win32", "agent": "claude-code", "title": "다른 작업", "_ssh": None},
+            "studio:claude-code-c": {"platform": "win32", "agent": "claude-code", "title": "D200H 포팅", "_ssh": "studio"},
+        }
+        with mock.patch.dict(hook_agents._sessions, sessions, clear=True), \
+                mock.patch.object(pc, "foreground_terminal_tab", return_value="✳ D200H 포팅"):
+            self.assertEqual(hook_agents.seen_terms(), ["local:claude-code-a"])
+        with mock.patch.dict(hook_agents._sessions, sessions, clear=True), \
+                mock.patch.object(pc, "foreground_terminal_tab", return_value=None):  # 맨 앞이 터미널이 아님
+            self.assertEqual(hook_agents.seen_terms(), [])
+
+    def test_foreground_tab_helper_is_reused(self):
+        """맨 앞 탭 읽기: PowerShell 을 한 번 띄워 계속 쓴다 (두 번째부터 빠르다)."""
+        first = pc.foreground_terminal_tab(timeout=20)
+        proc = pc._fg_tab._proc
+        t0 = time.perf_counter()
+        second = pc.foreground_terminal_tab()
+        self.assertIs(pc._fg_tab._proc, proc, "helper process must be reused")
+        self.assertLess(time.perf_counter() - t0, 1.0)
+        self.assertEqual(type(first), type(second))
+
     def test_select_tab_no_match_returns_zero(self):
         self.assertEqual(pc.select_terminal_tab(0, "no such tab zzz-agentdeck"), 0)
 

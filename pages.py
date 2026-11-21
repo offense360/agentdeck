@@ -328,6 +328,8 @@ def studio_tile(w: Workspace, blink_on: bool, header: str | None = None, theme: 
     else:
         b = Button(header=header, raw_header=raw, title="대기", sub=running, bg=theme["bg"], accent=theme["idle"])
     b.name_first = raw and AGENT_NAMES != "small"  # 프로젝트 칸만 (기타 총괄 같은 고정 이름은 그대로)
+    if b.name_first and not (w.attention or w.done or w.working):
+        b.accent = "#ffffff"  # 큰 모양에선 상태 글씨를 accent 로 칠하므로, 대기는 흐린 회색 대신 흰색 (덱에서 잘 읽히게)
     # 이름 뒤 띠 = 에이전트 색 (테두리·깜빡임·상태 글씨는 상태 색). 섞여 있으면 띠를 나눠 칠한다
     colors = [AGENT_COLORS[k] for k in kinds if k in AGENT_COLORS]
     if b.name_first and colors:

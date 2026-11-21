@@ -257,6 +257,110 @@ def select_terminal_tab(app_pid: int, title: str, dry_run: bool = False) -> int:
         return 0
 
 
+# 맨 앞 창이 Windows Terminal 이면 선택된 탭 이름을 한 줄씩 답하는 PowerShell (한 번 띄워 계속 쓴다).
+# 답: "-" = 맨 앞 창이 Windows Terminal 아님, "T:<탭 이름>" = 맨 앞 창의 선택된 탭
+_WT_FG_LOOP = r'''
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -Namespace AgentDeck -Name Fg -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();'
+$A = [Windows.Automation.AutomationElement]
+$tabCond = New-Object Windows.Automation.PropertyCondition($A::ControlTypeProperty, [Windows.Automation.ControlType]::TabItem)
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  $out = '-'
+  try {
+    $w = $A::FromHandle([AgentDeck.Fg]::GetForegroundWindow())
+    if ($w.Current.ClassName -eq 'CASCADIA_HOSTING_WINDOW_CLASS') {
+      $out = 'T:'
+      foreach ($t in $w.FindAll([Windows.Automation.TreeScope]::Descendants, $tabCond)) {
+        if ($t.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected) { $out = 'T:' + $t.Current.Name; break }
+      }
+    }
+  } catch { $out = '-' }
+  [Console]::Out.WriteLine($out)
+  [Console]::Out.Flush()
+}
+'''
+
+
+class _ForegroundTab:
+    """_WT_FG_LOOP 를 한 번 띄워 두고 묻는다. 프로세스를 매번 만들지 않아서 한 번 묻는 데 수십 ms."""
+
+    def __init__(self) -> None:
+        import queue
+        import threading
+
+        self._q: queue.Queue[str] = queue.Queue()
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._threading = threading
+
+    def _start(self) -> None:
+        self._proc = subprocess.Popen(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _WT_FG_LOOP],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        proc, q = self._proc, self._q
+
+        def reader() -> None:
+            for line in proc.stdout:
+                q.put(line.rstrip("\r\n"))
+
+        self._threading.Thread(target=reader, daemon=True).start()
+
+    def query(self, timeout: float) -> str | None:
+        import queue
+
+        with self._lock:
+            try:
+                if self._proc is None or self._proc.poll() is not None:
+                    self._start()
+                    timeout = max(timeout, 15)  # 처음 띄울 때는 UI Automation 을 읽어 들이느라 느리다
+                while not self._q.empty():  # 시간 초과로 늦게 온 옛 답은 버린다
+                    self._q.get_nowait()
+                self._proc.stdin.write("q\n")
+                self._proc.stdin.flush()
+                ans = self._q.get(timeout=timeout)
+            except (OSError, ValueError, queue.Empty):
+                self.close()  # 멈췄거나 죽었다: 다음에 새로 띄운다
+                return None
+        return ans[2:] if ans.startswith("T:") else None
+
+    def close(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+        self._proc = None
+
+
+_fg_tab: _ForegroundTab | None = None
+
+
+def foreground_terminal_tab(timeout: float = 3.0) -> str | None:
+    """맨 앞 창이 Windows Terminal 이면 선택된 탭 이름(상태 기호 포함 그대로), 아니면 None. Windows 전용."""
+    global _fg_tab
+    if not IS_WINDOWS:
+        return None
+    if _fg_tab is None:
+        _fg_tab = _ForegroundTab()
+    return _fg_tab.query(timeout)
+
+
+def tab_matches(tab_name: str, title: str) -> bool:
+    """Windows Terminal 탭 이름이 세션 제목과 같은 탭인지 (_WT_SELECT_TAB 과 같은 규칙).
+
+    앞의 상태 기호(✳ ◑ 등)는 빼고, Codex 처럼 '제목 | 프로젝트' 면 '제목 | ' 로 시작해도 같은 탭.
+    """
+    name = re.sub(r"^[\W_]+", "", tab_name or "").strip()  # 글자·숫자가 나오기 전까지 (PowerShell 쪽 [^\p{L}\p{N}] 과 같게)
+    want = re.sub(r"^[\W_]+", "", title or "").strip()
+    return bool(want) and (name == want or name.startswith(want + " | "))
+
+
 def run_cli(name: str, *args: str) -> bool:
     """PATH 의 명령(code · cursor 등)을 실행한다. 없으면 False."""
     exe = shutil.which(name)

@@ -162,13 +162,30 @@ def _codex_title(thread_id: str) -> str:
     return ""
 
 
+def session_title(d: dict) -> str:
+    """세션의 Windows Terminal 탭 제목 (Claude: 훅이 적은 ai-title, Codex: 없으면 session_index 에서)."""
+    return d.get("title") or (_codex_title(d.get("session", "")) if d.get("agent") == "codex" else "")
+
+
+def seen_terms() -> list[str]:
+    """Windows: 지금 맨 앞에 있는 Windows Terminal 탭에서 도는 세션들 (보고 있으니 알림을 확인한 것으로 친다)."""
+    if not platform_compat.IS_WINDOWS:
+        return []
+    tab = platform_compat.foreground_terminal_tab()
+    if not tab:
+        return []
+    return [term for term, d in list(_sessions.items())
+            if d.get("_ssh") is None and d.get("platform") == "win32"
+            and platform_compat.tab_matches(tab, session_title(d))]
+
+
 def _focus_windows(d: dict) -> bool:
     """Windows: VS Code · Cursor 는 그 프로젝트 창을 열고, Windows Terminal 은 같은 이름의 탭을 골라 앞으로,
     그 밖은 앱 창을 앞으로."""
     app, cwd, app_pid = d.get("app", ""), d.get("cwd", ""), int(d.get("app_pid") or 0)
     if app in ("code", "cursor") and cwd and platform_compat.run_cli(app, cwd):
         return True
-    title = d.get("title") or (_codex_title(d.get("session", "")) if d.get("agent") == "codex" else "")
+    title = session_title(d)
     # Codex 는 작업을 백그라운드 프로세스가 해서 어느 창인지(app) 모를 때가 많다 → 제목으로 모든 터미널 창에서 찾는다
     if title and app in ("terminal", ""):
         hwnd = platform_compat.select_terminal_tab(app_pid if app else 0, title)
