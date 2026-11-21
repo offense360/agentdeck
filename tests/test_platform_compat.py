@@ -154,13 +154,30 @@ class WindowsHookTest(unittest.TestCase):
         (codex_home / "session_index.jsonl").write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
             {"id": "th-1", "thread_name": "옛 이름"}, {"id": "th-2", "thread_name": "다른 대화"},
             {"id": "th-1", "thread_name": "geon4 구현 및 검증 진행"}]), encoding="utf-8")
+        day = codex_home / "sessions" / "2026" / "11" / "21"
+        day.mkdir(parents=True)
+        (day / "rollout-2026-11-21T23-19-50-th-1.jsonl").write_text("{}")  # th-1 만 기록이 있는 진짜 대화
         env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(codex_home)}
-        payload = json.dumps({"type": "agent-turn-complete", "thread-id": "th-1", "cwd": str(ROOT)})
-        subprocess.run(pc.python_cmd() + [str(ROOT / "hooks" / "agent_hook.py"), "codex", payload],
-                       env=env, timeout=30)
-        rec = json.loads((home / ".cache" / "d200" / "agents" / "codex-th-1.json").read_text())
+        agents = home / ".cache" / "d200" / "agents"
+        for tid in ("th-1", "th-aux"):  # th-aux: 기록 없는 내부 보조 대화
+            payload = json.dumps({"type": "agent-turn-complete", "thread-id": tid, "cwd": str(ROOT)})
+            subprocess.run(pc.python_cmd() + [str(ROOT / "hooks" / "agent_hook.py"), "codex", payload],
+                           env=env, timeout=30)
+        rec = json.loads((agents / "codex-th-1.json").read_text())
         self.assertEqual(rec["title"], "geon4 구현 및 검증 진행")
         self.assertEqual(rec["status"], "done")
+        self.assertFalse((agents / "codex-th-aux.json").exists(), "aux thread without rollout must be skipped")
+
+    def test_codex_title_resolved_at_press_time(self):
+        """새 대화는 알림보다 제목이 늦게 기록된다 → 누를 때 dashboard 가 다시 찾는다."""
+        import hook_agents
+
+        codex_home = Path(tempfile.mkdtemp())
+        (codex_home / "session_index.jsonl").write_text(
+            json.dumps({"id": "th-9", "thread_name": "Calculate 1+1"}), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+            self.assertEqual(hook_agents._codex_title("th-9"), "Calculate 1+1")
+            self.assertEqual(hook_agents._codex_title("nope"), "")
 
     def test_select_tab_no_match_returns_zero(self):
         self.assertEqual(pc.select_terminal_tab(0, "no such tab zzz-agentdeck"), 0)

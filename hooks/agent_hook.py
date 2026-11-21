@@ -229,6 +229,14 @@ def _codex_title(thread_id: str) -> str:
     return ""
 
 
+def _codex_has_rollout(thread_id: str) -> bool:
+    """Codex 가 대화 기록(rollout)을 남긴 대화인지. 내부 보조 대화(제목 생성 등)는 기록이 없고 탭도 없다."""
+    import glob
+
+    root = os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "sessions")
+    return bool(glob.glob(os.path.join(root, "*", "*", "*", f"rollout-*{thread_id}.jsonl")))
+
+
 def claude() -> None:
     try:
         d = json.load(sys.stdin)
@@ -267,6 +275,8 @@ def codex(argv: list[str]) -> None:
         d = json.loads(payload)
     except Exception:
         d = {}
+    if IS_WINDOWS and d.get("thread-id") and not _codex_has_rollout(d["thread-id"]):
+        d = {}  # Windows: 기록이 없는 내부 보조 대화는 덱에 올리지 않는다 (기존 notify 연결은 아래에서 그대로)
     if d.get("type") == "agent-turn-complete":
         session = d.get("thread-id") or d.get("turn-id") or "unknown"
         rec = _base("codex", session, d.get("cwd") or os.getcwd())

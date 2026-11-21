@@ -148,14 +148,30 @@ end tell''')
     return False
 
 
+def _codex_title(thread_id: str) -> str:
+    """Codex 대화 제목 (~/.codex/session_index.jsonl). 새 대화는 완료 알림보다 제목이 늦게 기록돼서,
+    훅이 못 적은 제목을 누를 때 다시 찾는다."""
+    path = os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "session_index.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fp:
+            for line in reversed(fp.readlines()):
+                if thread_id in line and json.loads(line).get("id") == thread_id:
+                    return str(json.loads(line).get("thread_name") or "")
+    except Exception:
+        pass
+    return ""
+
+
 def _focus_windows(d: dict) -> bool:
     """Windows: VS Code · Cursor 는 그 프로젝트 창을 열고, Windows Terminal 은 같은 이름의 탭을 골라 앞으로,
     그 밖은 앱 창을 앞으로."""
     app, cwd, app_pid = d.get("app", ""), d.get("cwd", ""), int(d.get("app_pid") or 0)
     if app in ("code", "cursor") and cwd and platform_compat.run_cli(app, cwd):
         return True
-    if app == "terminal" and d.get("title"):
-        hwnd = platform_compat.select_terminal_tab(app_pid, d["title"])
+    title = d.get("title") or (_codex_title(d.get("session", "")) if d.get("agent") == "codex" else "")
+    # Codex 는 작업을 백그라운드 프로세스가 해서 어느 창인지(app) 모를 때가 많다 → 제목으로 모든 터미널 창에서 찾는다
+    if title and app in ("terminal", ""):
+        hwnd = platform_compat.select_terminal_tab(app_pid if app else 0, title)
         if hwnd:
             return platform_compat.activate_hwnd(hwnd) or True  # 탭은 골랐다 (앞으로 오기는 Windows 가 막을 수 있음)
     return platform_compat.activate_pid(app_pid)
