@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from config import CFG
 from d200 import Button
 from machines import MachineStat, Volume, external_drives
 from remote_herdr import TOWER_SPACE, Member, StudioState, TowerMeta, Workspace, child_kinds, tower_split
@@ -297,21 +298,42 @@ def _alert_tile(header: str, title: str, sub: str, color: str, blink_on: bool, t
     return Button(header=header, raw_header=raw, title=title, sub=sub, bg=theme["bg"], accent=color, border=color)
 
 
+# 작업 현황 칸의 프로젝트 이름: "large"(기본) = 이름을 크게 두 줄까지, "small" = 원래처럼 위 작은 줄
+AGENT_NAMES: str = CFG.get("agent_names", "large")
+# 에이전트 구분: 이름 뒤 띠 색 + 아래 줄 이름 (덱 LCD 에서 글씨 색만으로는 구별이 안 돼서 넓은 띠로).
+# C=Claude Code, X=Codex, A=agy. config.json "agent_colors" 로 바꿀 수 있다
+AGENT_COLORS: dict[str, str] = {"C": "#d9773f", "X": "#3a8fd9", "A": "#9a6fd9", **(CFG.get("agent_colors") or {})}
+AGENT_LABELS: dict[str, str] = {"C": "Claude", "X": "Codex", "A": "AGY"}
+
+
 def studio_tile(w: Workspace, blink_on: bool, header: str | None = None, theme: dict = STUDIO_THEME) -> Button:
     """스튜디오 한 칸: 알림(결정/완료) 깜빡임 + 실행 중 에이전트 수."""
     raw = header is None  # 스튜디오 이름(사용자 데이터)은 번역하지 않음
     header = header or w.name.replace(" · 스튜디오", "")
-    # 아래 줄: 에이전트 종류별 개수(C=Claude, X=Codex, A=agy) + 지금 실행 중인 수
-    mix = " ".join(f"{k}{v}" for k, v in sorted(w.agents.items()))
+    # 아래 줄: 에이전트 종류별 개수 + 지금 실행 중인 수. 프로젝트 칸은 Claude · Codex 처럼 이름으로 (한 개면 숫자 생략)
+    kinds = sorted(k for k, n in w.agents.items() if n)
+    if raw and kinds:
+        mix = " ".join(AGENT_LABELS.get(k, k) + (str(w.agents[k]) if len(kinds) > 1 or w.agents[k] > 1 else "")
+                       for k in kinds)
+    else:
+        mix = " ".join(f"{k}{v}" for k, v in sorted(w.agents.items()))
     running = f"{mix} · 실행 {w.working}" if mix else f"실행 {w.working}"
     if w.attention:
-        return _alert_tile(header, f"결정 {w.attention}", running, YELLOW, blink_on, theme, raw)
-    if w.done:
-        return _alert_tile(header, f"완료 {w.done}", running, GREEN, blink_on, theme, raw)
-    if w.working:
-        return Button(header=header, raw_header=raw, title=f"작업 {w.working}", sub=running, bg=theme["bg"], accent=theme["accent"],
-                      border=theme["accent"])
-    return Button(header=header, raw_header=raw, title="대기", sub=running, bg=theme["bg"], accent=theme["idle"])
+        b = _alert_tile(header, f"결정 {w.attention}", running, YELLOW, blink_on, theme, raw)
+    elif w.done:
+        b = _alert_tile(header, f"완료 {w.done}", running, GREEN, blink_on, theme, raw)
+    elif w.working:
+        b = Button(header=header, raw_header=raw, title=f"작업 {w.working}", sub=running, bg=theme["bg"], accent=theme["accent"],
+                   border=theme["accent"])
+    else:
+        b = Button(header=header, raw_header=raw, title="대기", sub=running, bg=theme["bg"], accent=theme["idle"])
+    b.name_first = raw and AGENT_NAMES != "small"  # 프로젝트 칸만 (기타 총괄 같은 고정 이름은 그대로)
+    # 이름 뒤 띠 = 에이전트 색 (테두리·깜빡임·상태 글씨는 상태 색). 섞여 있으면 띠를 나눠 칠한다
+    colors = [AGENT_COLORS[k] for k in kinds if k in AGENT_COLORS]
+    if b.name_first and colors:
+        b.header_bg = colors[0] if len(colors) == 1 else colors
+        b.header_fg = "#16161e"
+    return b
 
 
 APP_LABEL = {"claude-code": "Claude", "codex": "Codex", "antigravity": "AGY"}

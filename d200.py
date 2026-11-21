@@ -180,6 +180,9 @@ class Button:
     image: bytes | None = None  # 미리 그린 196x196 PNG (어항 등). 있으면 그대로 보낸다  # 헤더가 사용자 데이터(종목·프로젝트·pane 이름)면 번역하지 않음
     fill: float | None = None  # 0~1: 아래에서부터 칸을 채우는 비율 (타이머)
     fill_color: str = "#f7768e"
+    name_first: bool = False  # header(이름)를 위쪽에 크게 최대 두 줄, title(상태)은 그 아래 중간 크기 (작업 현황)
+    # name_first 일 때 이름 뒤에 칠하는 띠 색 (에이전트 구분). 여러 색이면 가로로 나눠 칠한다 (Claude + Codex 섞임)
+    header_bg: str | list[str] | None = None
 
 
 def _fit(d: ImageDraw.ImageDraw, text: str, size: int, max_w: int) -> ImageFont.FreeTypeFont:
@@ -224,6 +227,54 @@ def _render_bars(d: ImageDraw.ImageDraw, btn: Button) -> None:
         d.text((ICON / 2, min(y + 10, ICON - 16)), btn.sub, font=lab, fill="#a9b1d6", anchor="mm")
 
 
+_NAME_BREAKS = "-_./· "  # 이름을 두 줄로 나눌 때 우선 끊는 자리 (구분 기호는 윗줄 끝에 남긴다)
+
+
+def _two_lines(d: ImageDraw.ImageDraw, text: str, f: ImageFont.FreeTypeFont, max_w: int) -> list[str] | None:
+    """두 줄로 나눠 둘 다 max_w 안에 들어가면 그 두 줄 (두 줄 길이가 비슷한 자리). 구분 기호 자리를 먼저, 없으면 글자 단위."""
+    cuts = [i + 1 for i, ch in enumerate(text[:-1]) if ch in _NAME_BREAKS] or list(range(1, len(text)))
+    best = None
+    for c in cuts:
+        a, b = text[:c].rstrip(), text[c:].lstrip()
+        wa, wb = d.textlength(a, font=f), d.textlength(b, font=f)
+        if a and b and wa <= max_w and wb <= max_w and (best is None or max(wa, wb) < best[0]):
+            best = (max(wa, wb), [a, b])
+    return best[1] if best else None
+
+
+def wrap_name(d: ImageDraw.ImageDraw, text: str, max_w: int, sizes=range(36, 15, -2)) -> tuple[list[str], ImageFont.FreeTypeFont]:
+    """이름을 최대 두 줄로, 들어가는 가장 큰 글씨로.
+
+    한 줄로 들어가는 글씨가 두 줄 글씨보다 조금(6px 이하)만 작으면 한 줄이 낫다 (짧은 이름을 괜히 끊지 않게).
+    """
+    fonts = {s: ImageFont.truetype(FONT_PATH, s) for s in sizes}
+    one = next((s for s in sizes if d.textlength(text, font=fonts[s]) <= max_w), None)
+    two = next(((s, ls) for s in sizes if (ls := _two_lines(d, text, fonts[s], max_w))), None)
+    if one and (not two or one >= two[0] - 6):
+        return [text], fonts[one]
+    if two:
+        return two[1], fonts[two[0]]
+    return [text], fonts[sizes[-1]]  # 그래도 안 들어가면 가장 작은 글씨 한 줄 (잘릴 수 있음)
+
+
+def _render_name_first(d: ImageDraw.ImageDraw, btn: Button) -> None:
+    lines, f = wrap_name(d, btn.header, ICON - 20)
+    color = btn.header_fg or btn.fg
+    if btn.header_bg:  # 이름 띠: 칸 위쪽을 위·좌·우 끝까지 칠한다 (위 = 에이전트 색, 아래 = 상태 색으로 깔끔하게 나뉘게)
+        colors = [btn.header_bg] if isinstance(btn.header_bg, str) else list(btn.header_bg)
+        w = ICON / len(colors)
+        for i, c in enumerate(colors):  # 여러 색이면 세로로 나눠 나란히
+            d.rectangle((int(w * i), 0, int(w * (i + 1)), 100), fill=c)
+    step = f.size + 4
+    top = 58 - (len(lines) - 1) * step / 2  # 한 줄이면 58, 두 줄이면 위아래로 벌린다
+    for i, line in enumerate(lines):
+        d.text((ICON / 2, top + i * step), line, font=f, fill=color, anchor="mm")
+    d.text((ICON / 2, 124), btn.title, font=_fit(d, btn.title, 32, ICON - 20), fill=btn.accent or btn.fg, anchor="mm")
+    if btn.sub:
+        d.text((ICON / 2, 160), btn.sub, font=_fit(d, btn.sub, 20, ICON - 20),
+               fill="#a9b1d6" if btn.fg == "#ffffff" else btn.fg, anchor="mm")
+
+
 def render_icon(btn: Button) -> bytes:
     """버튼 정보를 196x196 PNG 로 그린다. 문구는 화면 언어(i18n)에 맞춰 바꾼다."""
     from dataclasses import replace
@@ -241,6 +292,11 @@ def render_icon(btn: Button) -> bytes:
         d.rectangle((0, top, ICON, ICON), fill=btn.fill_color)
     if btn.border:
         d.rounded_rectangle((2, 2, ICON - 3, ICON - 3), 18, outline=btn.border, width=5)
+    if btn.name_first and btn.header:
+        _render_name_first(d, btn)
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
     if btn.bars:
         _render_bars(d, btn)
         buf = io.BytesIO()
