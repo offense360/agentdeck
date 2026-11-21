@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import random
 
 from PIL import Image, ImageDraw
@@ -222,6 +223,96 @@ class Rain(_Scene):
         steam = int(self.t * 3) % 3
         d.point((120 + steam % 2, self.SILL - 9 - steam), fill=(120, 120, 140))
         return img
+
+
+# ---------- 사진 배경 비멍 ----------
+RAIN_PHOTO = os.path.expanduser("~/.cache/d200/rain_photo.png")  # scripts/make_rain_photo.py 가 만든다
+
+
+class PhotoRain:
+    """사진 배경(980x588) 위에 빗줄기를 원래 해상도로 그린다. 칸마다 196px 그대로 잘라 보낸다 (확대 없음).
+
+    배경 사진은 git 밖(~/.cache/d200/rain_photo.png)에 둔다. 누르면 번개처럼 화면이 번쩍인다.
+    """
+    TILE = 196
+    W, H = COLS * TILE, ROWS * TILE  # 980 x 588
+    hint_bg = (30, 40, 50)
+    hint_fg = (230, 240, 250)
+
+    def __init__(self, path: str = RAIN_PHOTO, seed: int | None = None) -> None:
+        self.bg = Image.open(path).convert("RGB").resize((self.W, self.H), Image.LANCZOS)
+        self.rnd = random.Random(seed)
+        self.t = 0.0
+        self.flash = 0.0
+        # 빗줄기 3겹 (먼 · 중간 · 가까운): [x, y, 속도(px/s), 길이, 불투명도, 굵기]
+        self.drops: list[list[float]] = []
+        for n, sp, ln, al, wd in ((110, 520, 28, 95, 2), (70, 760, 44, 140, 3), (32, 1050, 66, 185, 4)):
+            for _ in range(n):
+                self.drops.append([self.rnd.uniform(0, self.W), self.rnd.uniform(0, self.H),
+                                   sp * self.rnd.uniform(0.9, 1.1), ln * self.rnd.uniform(0.8, 1.2), al, wd])
+        self.splash: list[list[float]] = []  # 바닥에 튀는 물 [x, 남은 시간]
+
+    def feed(self, tile: int) -> None:
+        self.flash = 1.0
+        try:
+            from sfx import play
+            play("thunder", 0.5, 0.9)
+        except Exception:
+            pass
+
+    def step(self, dt: float) -> None:
+        self.t += dt
+        self.flash = max(0.0, self.flash - dt * 1.4)
+        if self.rnd.random() < dt * 0.01:  # 아주 가끔 먼 번개
+            self.flash = 0.45
+        for d in self.drops:
+            d[1] += d[2] * dt
+            d[0] -= d[2] * dt * 0.16  # 바람에 살짝 기울어 내림
+            if d[1] > self.H:
+                if d[5] > 1 and self.rnd.random() < 0.6:
+                    self.splash.append([d[0], 0.2])
+                d[0], d[1] = self.rnd.uniform(0, self.W + 120), self.rnd.uniform(-60, 0)
+        self.splash = [[x, left - dt] for x, left in self.splash if left - dt > 0][-40:]
+
+    def canvas(self) -> Image.Image:
+        img = self.bg.copy()
+        if self.flash > 0:  # 번개: 하늘이 하얗게 번쩍
+            img = Image.blend(img, Image.new("RGB", img.size, (245, 248, 255)), min(0.7, self.flash * 0.6))
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        for x, y, sp, ln, al, wd in self.drops:
+            d.line((x, y, x - ln * 0.16, y + ln), fill=(235, 242, 250, int(al)), width=int(wd))
+        for x, left in self.splash:  # 바닥에 튀는 물방울
+            k = left / 0.2
+            for dx, dy in ((-6, -5), (5, -7), (0, -10)):
+                d.point((x + dx * (1.2 - k), self.H - 3 + dy * (1 - k)), fill=(240, 246, 252, int(180 * k)))
+        img.paste(layer, (0, 0), layer)
+        return img
+
+    def tiles(self, hint: str | None = None) -> tuple[dict[int, bytes], bytes]:
+        img = self.canvas()
+        t = self.TILE
+        out = {i: _png(img.crop(((i % COLS) * t, (i // COLS) * t, (i % COLS + 1) * t, (i // COLS + 1) * t)))
+               for i in range(13)}
+        wide = img.crop((3 * t, 2 * t, 5 * t, 3 * t))  # 넓은 칸 (392x196, 기기 크기에는 d200 이 맞춘다)
+        if hint:
+            from clock import _kr
+            from i18n import tr
+
+            dw = ImageDraw.Draw(wide)
+            dw.rounded_rectangle((10, 150, wide.width - 10, 188), 10, fill=self.hint_bg)
+            dw.text((wide.width // 2, 169), tr(hint), font=_kr(18, 4), fill=self.hint_fg, anchor="mm")
+        return out, _png(wide)
+
+
+def make_rain(seed: int | None = None):
+    """비멍 장면: 배경 사진(~/.cache/d200/rain_photo.png)이 있으면 사진 비멍, 없으면 도트 비멍."""
+    if os.path.exists(RAIN_PHOTO):
+        try:
+            return PhotoRain(RAIN_PHOTO, seed)
+        except Exception as e:  # 사진이 깨졌으면 원래 비멍으로
+            print(f"rain photo error, using pixel rain: {e!r}", flush=True)
+    return Rain(seed)
 
 
 # ---------- 노을 바닷가 ----------

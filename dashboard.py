@@ -36,7 +36,7 @@ import present
 import intro
 from sfx import ambient, play
 from fireplace import Fireplace
-from scenes import Beach, Rain
+from scenes import Beach, make_rain
 from mole import MOLE_HOSTS, dryrun_info, empty_trash, mole_status, refresh_dryrun, run_clean, run_purge, trash_info
 from machines import MACHINES
 from worktrees import Worktree, ask_tower, open_in_herdr, remove_worktree, worktrees
@@ -161,7 +161,7 @@ class Dashboard:
         self.market_view = 0  # market.VIEWS 순서
         self.aquarium = Aquarium(int(CFG.get("aquarium_fish", 14)))  # 물고기 수 (config)
         self.fireplace = Fireplace()
-        self.rain = Rain()
+        self.rain = make_rain()  # ~/.cache/d200/rain_photo.png 가 있으면 사진 배경 비멍
         self.beach = Beach()
         # 멍때리기 화면: aqua(물멍) | fire(불멍). 화면보호기는 config "screensaver_scene" (aqua·fire·번갈아 alternate)
         self.saver_cfg = CFG.get("screensaver_scene", "aqua")

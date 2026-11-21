@@ -177,11 +177,14 @@ def _emoji(ch: str, size: int) -> Image.Image | None:
 
 
 ICONS = ROOT / "assets" / "icons"
+USER_ICONS = Path.home() / ".cache" / "d200" / "icons"  # 같은 이름이 있으면 이쪽을 먼저 (git 밖, 개인 사진 아이콘 등)
 
 
 @lru_cache(maxsize=32)
 def _icon(name: str, size: int) -> Image.Image | None:
-    p = ICONS / f"{name}.png"
+    p = USER_ICONS / f"{name}.png"
+    if not p.exists():
+        p = ICONS / f"{name}.png"
     if p.exists():
         im = Image.open(p).convert("RGBA")
         im.thumbnail((size, size), Image.LANCZOS)
