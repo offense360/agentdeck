@@ -24,6 +24,7 @@ from typing import Callable
 import hid
 from PIL import Image, ImageDraw, ImageFont
 
+import platform_compat
 from i18n import t
 
 VID, PID = 0x2207, 0x0019
@@ -44,17 +45,7 @@ IN_DEVICE_INFO = 0x0303
 USAGE_PAGE_CONSUMER = 0x0C  # 인터페이스 0 의 Consumer Control 컬렉션 = 화면·명령 채널
 
 
-def _pick_font() -> str:
-    """한글이 되는 시스템 폰트. macOS 가 먼저, 그다음 Windows · Linux."""
-    candidates = (
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",  # macOS
-        r"C:\Windows\Fonts\malgun.ttf",  # Windows (맑은 고딕)
-        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",  # Linux
-    )
-    return next((p for p in candidates if os.path.exists(p)), candidates[0])
-
-
-FONT_PATH = _pick_font()  # 한글 지원
+FONT_PATH = platform_compat.font_file("kr")[0]  # 한글 지원 (macOS Apple SD Gothic Neo, Windows 맑은 고딕)
 
 
 @dataclass(frozen=True)
@@ -524,7 +515,10 @@ class D200:
             if self.profile.wide_press_restore and ev.kind == "button" and ev.index >= WIDE_INDEX:
                 self._schedule_restore()
             if self.on_event:
-                self.on_event(ev)
+                try:
+                    self.on_event(ev)
+                except Exception as e:  # 처리 중 오류가 읽기 스레드를 죽이면 그 뒤 입력이 전부 끊긴다
+                    _log(f"input handler error: {e!r}")
         elif cmd == IN_DEVICE_INFO and self.on_info:
             self.on_info(data.split(b"\x00")[0].decode("ascii", "replace"))
 

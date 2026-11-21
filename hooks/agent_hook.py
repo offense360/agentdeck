@@ -43,7 +43,70 @@ CLAUDE_STATUS = {
 }
 
 
+IS_WINDOWS = sys.platform == "win32"
+# Windows: 훅은 Git Bash · cmd 같은 셸을 거쳐 실행되므로 부모 프로세스가 곧 사라지는 셸이다.
+# 셸을 건너뛰며 위로 올라가 진짜 에이전트(claude · node · codex) 와 그 창을 가진 앱을 찾는다
+_WIN_PASS = {"bash.exe", "sh.exe", "dash.exe", "env.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe",
+             "python.exe", "pythonw.exe", "py.exe", "uv.exe", "uvx.exe"}
+_WIN_APPS = {"windowsterminal.exe": "terminal", "code.exe": "code", "code - insiders.exe": "code",
+             "cursor.exe": "cursor", "windsurf.exe": "windsurf", "wezterm-gui.exe": "wezterm",
+             "alacritty.exe": "alacritty", "idea64.exe": "idea", "pycharm64.exe": "pycharm"}
+
+
+def _win_procs() -> dict[int, tuple[int, str]]:
+    """Windows: {pid: (부모 pid, 실행 파일 이름 소문자)}."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    out: dict[int, tuple[int, str]] = {}
+    if snap in (None, wintypes.HANDLE(-1).value):
+        return out
+    try:
+        pe = PROCESSENTRY32W()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(pe))
+        while ok:
+            out[pe.th32ProcessID] = (pe.th32ParentProcessID, pe.szExeFile.lower())
+            ok = k32.Process32NextW(snap, ctypes.byref(pe))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def _win_lineage() -> tuple[int, str, int, str]:
+    """(에이전트 pid, 이름, 창을 가진 앱 pid, 앱 종류). 못 찾으면 부모 pid 와 빈 값."""
+    procs = _win_procs()
+    pid, seen = os.getppid(), set()
+    agent_pid, agent_name, app_pid, app = 0, "", 0, ""
+    while pid and pid in procs and pid not in seen and len(seen) < 40:
+        seen.add(pid)
+        parent, name = procs[pid]
+        if not agent_pid and name not in _WIN_PASS:
+            agent_pid, agent_name = pid, name
+        if agent_pid and name in _WIN_APPS:
+            # VS Code 같은 앱은 자식 프로세스(확장 호스트 등)도 같은 이름이다. 창은 맨 위 프로세스가 가진다
+            while parent in procs and procs[parent][1] == name and parent not in seen:
+                seen.add(parent)
+                pid, parent = parent, procs[parent][0]
+            app_pid, app = pid, _WIN_APPS[name]
+            break
+        pid = parent
+    return agent_pid or os.getppid(), agent_name, app_pid, app
+
+
 def _ps(pid: int, field: str) -> str:
+    if IS_WINDOWS:
+        return ""  # Windows 에는 ps 가 없다 (Git Bash 의 ps 는 옵션이 다름)
     try:
         return subprocess.run(["ps", "-o", f"{field}=", "-p", str(pid)], capture_output=True, text=True,
                               timeout=2).stdout.strip()
@@ -65,7 +128,7 @@ def _project(cwd: str) -> str:
             return os.path.basename(top)
     except Exception:
         pass
-    return os.path.basename(cwd.rstrip("/")) or cwd
+    return os.path.basename(cwd.rstrip("/\\")) or cwd
 
 
 def _write(rec: dict) -> None:
@@ -84,6 +147,8 @@ def _write(rec: dict) -> None:
 
 
 def _base(agent: str, session: str, cwd: str) -> dict:
+    if IS_WINDOWS:
+        return _base_windows(agent, session, cwd)
     ppid = os.getppid()  # 훅을 띄운 에이전트 프로세스
     args = _ps(ppid, "args")
     return {
@@ -99,6 +164,33 @@ def _base(agent: str, session: str, cwd: str) -> dict:
         "bundle": os.environ.get("__CFBundleIdentifier", ""),  # 실행 앱 (VS Code, Cursor, iTerm…)
         # 다른 프로그램이 띄운 비대화형 실행(-p/--print, exec)은 하위 작업으로 본다
         "top": not any(f in f" {args} " for f in (" -p ", " --print ", " exec ")),
+        "updated": time.time(),
+    }
+
+
+def _base_windows(agent: str, session: str, cwd: str) -> dict:
+    try:
+        pid, name, app_pid, app = _win_lineage()
+    except Exception:
+        pid, name, app_pid, app = os.getppid(), "", 0, ""
+    if not app and os.environ.get("TERM_PROGRAM") == "vscode":  # VS Code 계열 내장 터미널
+        app = "cursor" if "cursor" in os.environ.get("VSCODE_GIT_ASKPASS_NODE", "").lower() else "code"
+    return {
+        "id": f"{agent}-{session}",
+        "agent": agent,
+        "session": session,
+        "cwd": cwd,
+        "project": _project(cwd),
+        "host": socket.gethostname().split(".")[0],
+        "pid": pid,
+        "tty": "",
+        "term_program": os.environ.get("TERM_PROGRAM", ""),
+        "bundle": "",
+        "platform": "win32",
+        "agent_exe": name,
+        "app": app,  # terminal · code · cursor … (눌렀을 때 이동에 쓴다)
+        "app_pid": app_pid,
+        "top": True,  # Windows 에선 명령줄을 읽지 않으므로 비대화형 실행을 가려내지 않는다
         "updated": time.time(),
     }
 
