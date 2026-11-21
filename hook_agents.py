@@ -149,11 +149,16 @@ end tell''')
 
 
 def _focus_windows(d: dict) -> bool:
-    """Windows: VS Code · Cursor 는 그 프로젝트 창을 열고, 그 밖(Windows Terminal 등)은 앱 창을 앞으로."""
-    app, cwd = d.get("app", ""), d.get("cwd", "")
+    """Windows: VS Code · Cursor 는 그 프로젝트 창을 열고, Windows Terminal 은 같은 이름의 탭을 골라 앞으로,
+    그 밖은 앱 창을 앞으로."""
+    app, cwd, app_pid = d.get("app", ""), d.get("cwd", ""), int(d.get("app_pid") or 0)
     if app in ("code", "cursor") and cwd and platform_compat.run_cli(app, cwd):
         return True
-    return platform_compat.activate_pid(int(d.get("app_pid") or 0))
+    if app == "terminal" and d.get("title"):
+        hwnd = platform_compat.select_terminal_tab(app_pid, d["title"])
+        if hwnd:
+            return platform_compat.activate_hwnd(hwnd) or True  # 탭은 골랐다 (앞으로 오기는 Windows 가 막을 수 있음)
+    return platform_compat.activate_pid(app_pid)
 
 
 def focus(ws: Workspace, step: int = 0) -> bool:

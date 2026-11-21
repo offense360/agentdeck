@@ -130,6 +130,25 @@ class WindowsHookTest(unittest.TestCase):
         self.assertEqual(rec["project"], ROOT.name)
         self.assertTrue(pc.pid_alive(rec["pid"]), "recorded pid must outlive the hook (not the shell)")
 
+    def test_hook_records_ai_title_for_tab_matching(self):
+        """transcript 의 마지막 ai-title 을 기록한다 (Windows Terminal 탭 이름과 같다)."""
+        home = Path(tempfile.mkdtemp())
+        transcript = home / "t.jsonl"
+        lines = [{"type": "ai-title", "aiTitle": "옛 제목"}, {"type": "user", "message": "x" * 1000},
+                 {"type": "ai-title", "aiTitle": "D200H 포팅"}, {"type": "assistant"}]
+        transcript.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in lines), encoding="utf-8")
+        env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+        payload = json.dumps({"hook_event_name": "Stop", "session_id": "t2", "cwd": str(ROOT),
+                              "transcript_path": str(transcript)})
+        subprocess.run(pc.python_cmd() + [str(ROOT / "hooks" / "agent_hook.py"), "claude"], input=payload,
+                       text=True, env=env, timeout=30, encoding="utf-8")
+        rec = json.loads((home / ".cache" / "d200" / "agents" / "claude-code-t2.json").read_text())
+        self.assertEqual(rec["title"], "D200H 포팅")
+        self.assertEqual(rec["status"], "done")
+
+    def test_select_tab_no_match_returns_zero(self):
+        self.assertEqual(pc.select_terminal_tab(0, "no such tab zzz-agentdeck"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

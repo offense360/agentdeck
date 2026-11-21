@@ -195,6 +195,24 @@ def _base_windows(agent: str, session: str, cwd: str) -> dict:
     }
 
 
+def _ai_title(transcript: str) -> str:
+    """Claude Code 가 붙인 대화 제목 (transcript 의 마지막 ai-title). Windows Terminal 탭 이름과 같다.
+
+    transcript 는 수 MB 가 될 수 있어 끝부분만 읽는다 (ai-title 은 대화 중 자주 다시 기록된다).
+    """
+    try:
+        with open(transcript, "rb") as fp:
+            fp.seek(0, os.SEEK_END)
+            fp.seek(max(0, fp.tell() - 512 * 1024))
+            tail = fp.read().decode("utf-8", "replace")
+        for line in reversed(tail.splitlines()):
+            if '"ai-title"' in line:
+                return str(json.loads(line).get("aiTitle") or "")
+    except Exception:
+        pass
+    return ""
+
+
 def claude() -> None:
     try:
         d = json.load(sys.stdin)
@@ -215,6 +233,10 @@ def claude() -> None:
         return
     rec = _base("claude-code", session, d.get("cwd") or os.getcwd())
     rec.update(status=status, event=ev)
+    if IS_WINDOWS and d.get("transcript_path"):
+        title = _ai_title(d["transcript_path"])
+        if title:  # 없으면 예전 값을 유지 (_write 가 이전 기록과 합친다)
+            rec["title"] = title  # 눌렀을 때 Windows Terminal 의 같은 이름 탭으로 이동
     _write(rec)
 
 

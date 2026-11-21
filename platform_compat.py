@@ -193,15 +193,61 @@ def activate_pid(pid: int) -> bool:
         return True
 
     user32.EnumWindows(each, 0)
-    if not found:
+    return activate_hwnd(found[0]) if found else False
+
+
+def activate_hwnd(hwnd: int) -> bool:
+    """Windows: 창 하나를 맨 앞으로 (최소화돼 있으면 복원)."""
+    if not IS_WINDOWS or not hwnd:
         return False
-    hwnd = found[0]
+    import ctypes
+
+    user32 = ctypes.windll.user32
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     # 백그라운드 프로세스는 창을 앞으로 가져올 권한이 없어 작업 표시줄만 깜빡인다. Alt 키를 한 번 눌렀다 떼면 허용된다
     user32.keybd_event(0x12, 0, 0, 0)
     user32.keybd_event(0x12, 0, 2, 0)
     return bool(user32.SetForegroundWindow(hwnd))
+
+
+# Windows Terminal 탭 고르기: UI Automation 으로 탭 이름이 같은 탭을 선택하고 그 창 핸들을 출력한다.
+# Claude Code 는 탭 제목 앞에 상태 기호(✳ ◑ ⠂ 등)를 붙이므로 글자·숫자가 나오기 전까지는 빼고 비교한다.
+_WT_SELECT_TAB = r'''
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$strip = { param($s) ($s -replace '^[^\p{L}\p{N}]+', '').Trim() }
+$want = & $strip $env:AGENTDECK_TAB_TITLE
+$appPid = [int]$env:AGENTDECK_APP_PID
+$A = [Windows.Automation.AutomationElement]
+$winCond = New-Object Windows.Automation.PropertyCondition($A::ClassNameProperty, 'CASCADIA_HOSTING_WINDOW_CLASS')
+$tabCond = New-Object Windows.Automation.PropertyCondition($A::ControlTypeProperty, [Windows.Automation.ControlType]::TabItem)
+foreach ($w in $A::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $winCond)) {
+  if ($appPid -and $w.Current.ProcessId -ne $appPid) { continue }
+  foreach ($t in $w.FindAll([Windows.Automation.TreeScope]::Descendants, $tabCond)) {
+    if ((& $strip $t.Current.Name) -eq $want) {
+      $t.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+      $w.Current.NativeWindowHandle
+      exit 0
+    }
+  }
+}
+exit 1
+'''
+
+
+def select_terminal_tab(app_pid: int, title: str) -> int:
+    """Windows Terminal 에서 제목이 같은 탭을 고른다. 성공하면 그 창 핸들, 못 찾으면 0."""
+    if not IS_WINDOWS or not title.strip():
+        return 0
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _WT_SELECT_TAB],
+                           capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "AGENTDECK_TAB_TITLE": title, "AGENTDECK_APP_PID": str(app_pid or 0)},
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return int(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else 0
+    except Exception:
+        return 0
 
 
 def run_cli(name: str, *args: str) -> bool:
