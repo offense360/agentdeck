@@ -213,6 +213,22 @@ def _ai_title(transcript: str) -> str:
     return ""
 
 
+def _codex_title(thread_id: str) -> str:
+    """Codex 대화 제목: ~/.codex/session_index.jsonl 의 thread_name (Windows Terminal 탭 이름은 '제목 | 프로젝트')."""
+    path = os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "session_index.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fp:
+            lines = fp.readlines()
+        for line in reversed(lines):  # 같은 대화가 여러 번 기록되면 마지막이 최신
+            if thread_id in line:
+                d = json.loads(line)
+                if d.get("id") == thread_id:
+                    return str(d.get("thread_name") or "")
+    except Exception:
+        pass
+    return ""
+
+
 def claude() -> None:
     try:
         d = json.load(sys.stdin)
@@ -255,6 +271,10 @@ def codex(argv: list[str]) -> None:
         session = d.get("thread-id") or d.get("turn-id") or "unknown"
         rec = _base("codex", session, d.get("cwd") or os.getcwd())
         rec.update(status="done", event="agent-turn-complete")
+        if IS_WINDOWS and d.get("thread-id"):
+            title = _codex_title(d["thread-id"])
+            if title:
+                rec["title"] = title  # 눌렀을 때 Windows Terminal 의 그 탭으로
         _write(rec)
     if forward[:-1]:  # 기존 연동(예: Computer Use) 그대로 실행
         try:

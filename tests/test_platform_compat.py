@@ -146,6 +146,22 @@ class WindowsHookTest(unittest.TestCase):
         self.assertEqual(rec["title"], "D200H 포팅")
         self.assertEqual(rec["status"], "done")
 
+    def test_hook_records_codex_thread_name(self):
+        """Codex: notify 의 thread-id 로 session_index.jsonl 의 thread_name 을 찾아 기록한다."""
+        home = Path(tempfile.mkdtemp())
+        codex_home = home / ".codex"
+        codex_home.mkdir()
+        (codex_home / "session_index.jsonl").write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+            {"id": "th-1", "thread_name": "옛 이름"}, {"id": "th-2", "thread_name": "다른 대화"},
+            {"id": "th-1", "thread_name": "geon4 구현 및 검증 진행"}]), encoding="utf-8")
+        env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(codex_home)}
+        payload = json.dumps({"type": "agent-turn-complete", "thread-id": "th-1", "cwd": str(ROOT)})
+        subprocess.run(pc.python_cmd() + [str(ROOT / "hooks" / "agent_hook.py"), "codex", payload],
+                       env=env, timeout=30)
+        rec = json.loads((home / ".cache" / "d200" / "agents" / "codex-th-1.json").read_text())
+        self.assertEqual(rec["title"], "geon4 구현 및 검증 진행")
+        self.assertEqual(rec["status"], "done")
+
     def test_select_tab_no_match_returns_zero(self):
         self.assertEqual(pc.select_terminal_tab(0, "no such tab zzz-agentdeck"), 0)
 

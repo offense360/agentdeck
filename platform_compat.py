@@ -213,6 +213,7 @@ def activate_hwnd(hwnd: int) -> bool:
 
 # Windows Terminal 탭 고르기: UI Automation 으로 탭 이름이 같은 탭을 선택하고 그 창 핸들을 출력한다.
 # Claude Code 는 탭 제목 앞에 상태 기호(✳ ◑ ⠂ 등)를 붙이므로 글자·숫자가 나오기 전까지는 빼고 비교한다.
+# Codex 는 '대화 제목 | 프로젝트' 로 붙이므로 '제목 | ' 로 시작해도 같은 탭으로 본다.
 _WT_SELECT_TAB = r'''
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -225,8 +226,9 @@ $tabCond = New-Object Windows.Automation.PropertyCondition($A::ControlTypeProper
 foreach ($w in $A::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $winCond)) {
   if ($appPid -and $w.Current.ProcessId -ne $appPid) { continue }
   foreach ($t in $w.FindAll([Windows.Automation.TreeScope]::Descendants, $tabCond)) {
-    if ((& $strip $t.Current.Name) -eq $want) {
-      $t.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    $name = & $strip $t.Current.Name
+    if ($name -eq $want -or $name.StartsWith($want + ' | ')) {
+      if (-not $env:AGENTDECK_TAB_DRYRUN) { $t.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select() }
       $w.Current.NativeWindowHandle
       exit 0
     }
@@ -236,14 +238,19 @@ exit 1
 '''
 
 
-def select_terminal_tab(app_pid: int, title: str) -> int:
-    """Windows Terminal 에서 제목이 같은 탭을 고른다. 성공하면 그 창 핸들, 못 찾으면 0."""
+def select_terminal_tab(app_pid: int, title: str, dry_run: bool = False) -> int:
+    """Windows Terminal 에서 제목이 같은 탭을 고른다. 성공하면 그 창 핸들, 못 찾으면 0.
+
+    dry_run: 찾기만 하고 탭은 바꾸지 않는다 (시험용).
+    """
     if not IS_WINDOWS or not title.strip():
         return 0
+    env = {**os.environ, "AGENTDECK_TAB_TITLE": title, "AGENTDECK_APP_PID": str(app_pid or 0)}
+    if dry_run:
+        env["AGENTDECK_TAB_DRYRUN"] = "1"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _WT_SELECT_TAB],
-                           capture_output=True, text=True, timeout=15,
-                           env={**os.environ, "AGENTDECK_TAB_TITLE": title, "AGENTDECK_APP_PID": str(app_pid or 0)},
+                           capture_output=True, text=True, timeout=15, env=env,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return int(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else 0
     except Exception:
