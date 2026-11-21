@@ -75,6 +75,7 @@ REPEAT_WINDOW = 30  # 같은 칸 반복 누름으로 보는 시간(초)
 # Windows · 훅 방식: 깜빡이는 세션의 Windows Terminal 탭을 맨 앞에서 보고 있으면 확인한 것으로 친다 (config "seen_ack": false 로 끔)
 SEEN_ACK = platform_compat.IS_WINDOWS and AGENT_SOURCE == "hooks" and CFG.get("seen_ack", True)
 SEEN_POLL_SEC = 2
+RESET_PICK_SEC = 15  # 요약 리셋 칸을 눌러 다른 리셋을 본 뒤 '다음 리셋'으로 돌아가기까지
 
 
 def signature(s: StudioState) -> tuple:
@@ -150,6 +151,7 @@ class Dashboard:
         self.raw_studio = StudioState(False, [])  # Herdr 원본 상태
         self.acked: set[tuple[str, str]] = set()  # 눌러서 확인한 알림 (터미널, 상태)
         self.seen_busy = False  # ack_seen 이 도는 중 (겹쳐 돌지 않게)
+        self.reset_pick, self.reset_pick_at = 0, 0.0  # 요약 리셋 칸에서 몇 번째 리셋을 보는지
         self.last_focus: tuple[str, int, float] = ("", 0, 0.0)  # (스페이스 이름, 누른 횟수, 시각)
         self.row_names: list[str] = []  # 3페이지 가운데 줄 스튜디오 순서
         self.row_lock_until = 0.0
@@ -306,6 +308,9 @@ class Dashboard:
             self.on_studio_press(ev.index)
         elif self.page == 5 and (ev.index < 10 or ev.index >= 13):  # 넓은 타이머 칸(13·14)도 조작 가능
             self.on_pomodoro_press(ev.index, held)
+        elif self.page == 1 and ev.index == 4:  # 요약 리셋 칸: 누를 때마다 다른 서비스·창의 리셋 (15초 뒤 '다음 리셋'으로)
+            self.reset_pick, self.reset_pick_at = self.reset_pick + 1, time.time()
+            self.render()
         elif self.page == 1 and ev.index == 8 and (self.studio.attention or self.studio.done):  # 요약 스튜디오 칸: 알림 있는 곳으로
             alerts = [w for w in self.studio.workspaces if w.attention] or [w for w in self.studio.workspaces if w.done]
             self.focus_ws(alerts[0])
@@ -894,7 +899,7 @@ class Dashboard:
                     print(f"{datetime.now():%H:%M:%S} parcel render error: {e}", flush=True)
                 return
             if self.page == 1:
-                body = page_summary(self.llms, self.studio, now, self.blink_on)
+                body = page_summary(self.llms, self.studio, now, self.blink_on, self.reset_pick)
             elif self.page == 2:
                 body = page_grid(self.llms, now, [(n, c, d) for k, n, c in WEB_CREDITS if (d := web_credits.load(k))])
             elif self.page == 3:
@@ -1007,6 +1012,8 @@ class Dashboard:
                     if signature(new) != signature(self.raw_studio):
                         self.set_studio(new)
                         dirty = True
+                if self.reset_pick and time.time() - self.reset_pick_at > RESET_PICK_SEC:  # 리셋 칸: 다시 '다음 리셋'으로
+                    self.reset_pick, dirty = 0, dirty or self.page == 1
                 # 깜빡이는 칸이 있을 때만: 그 세션 탭을 보고 있으면 확인 처리 (백그라운드, 화면 갱신을 막지 않게)
                 if SEEN_ACK and sec % SEEN_POLL_SEC == 0 and not self.seen_busy \
                         and (self.studio.attention or self.studio.done):

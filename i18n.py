@@ -135,7 +135,7 @@ WORDS: list[tuple[str, str]] = sorted([
     ("오른쪽 위: 딜 · 오른쪽 아래: 베팅 바꾸기", "Top right: deal · Bottom right: bet"),
     ("21에 가깝게, 넘으면 짐", "Get close to 21 without going over"), ("이겼어요", "You win"), ("비겼어요", "Push"),
     ("졌어요", "You lose"), ("아무 칸: 다음 판", "Any key: next hand"), ("딜", "DEAL"), ("돌리기", "SPIN"), ("코인", "Coins"),
-    ("지금 쓰기 좋은", "Best now"), ("다음 리셋", "Next reset"), ("시간 대비", "vs time"),
+    ("지금 쓰기 좋은", "Best now"), ("다음 리셋", "Next reset"), ("안 씀", "unused"), ("시간 대비", "vs time"),
     ("한도 정보 없음", "no data"), ("정보 없음", "no data"), ("데이터 없음", "no data"),
     ("연결 안 됨·미설정", "offline / not set"), ("연결 안 됨", "offline"), ("스튜디오 OFF", "Studio OFF"),
     ("눌러서 워크트리 보기", "Press for worktrees"), ("눌러서 이동", "Press to open"), ("눌러서 확인", "Press to view"),

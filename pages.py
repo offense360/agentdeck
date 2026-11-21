@@ -189,7 +189,39 @@ def llm_tile(m: LLM, now: datetime | None = None) -> Button:
     )
 
 
-def page_summary(llms: list[LLM], studio: StudioState, now: datetime, blink_on: bool = False) -> dict[int, Button]:
+def reset_list(llms: list[LLM], now: datetime) -> list[tuple[str, str, datetime, float | None]]:
+    """요약의 리셋 칸이 보여 줄 순서: [(LLM 이름, 창, 리셋 시각, 남은 비율)].
+
+    맨 앞 = 원래의 '다음 리셋' (쓰기 시작한 창 중 가장 먼저 리셋). 그 뒤는 나머지 모든 창을 리셋 순서대로
+    (아직 안 쓴 창도 포함: 다른 서비스 리셋 날짜를 보려고 누를 때).
+    """
+    every = sorted(((m.name, label, lim.reset, lim.remaining) for m in llms
+                    for label, lim in (("5H", m.five), ("주간", m.week)) if lim and lim.reset and lim.reset > now),
+                   key=lambda x: x[2])
+    used = [e for e in every if (e[3] or 0) < 0.999]
+    return [used[0]] + [e for e in every if e is not used[0]] if used else every
+
+
+def reset_tile(llms: list[LLM], now: datetime, pick: int = 0) -> Button:
+    """리셋 칸. pick 0 = 다음 리셋, 누를 때마다 다음 항목 (reset_list 순서로 돌아간다).
+
+    쓰기 시작한 창이 하나도 없으면 원래처럼 pick 0 은 빈 칸이고, 누르면 안 쓴 창들의 리셋을 보여 준다.
+    """
+    items = reset_list(llms, now)
+    has_next = bool(items) and (items[0][3] or 0) < 0.999
+    seq: list = items if has_next else [None, *items]
+    entry = seq[pick % len(seq)] if seq else None
+    if entry is None:
+        return Button(bg=BG)
+    name, label, reset, remaining = entry
+    n = items.index(entry)
+    header = "다음 리셋" if has_next and n == 0 else f"리셋 {n + 1}/{len(items)}"
+    sub = f"{name.split()[0]} {label}" + (" · 안 씀" if (remaining or 0) >= 0.999 else "")
+    return Button(header=header, title=until(reset, now), sub=sub, bg=BG, accent=DIM)
+
+
+def page_summary(llms: list[LLM], studio: StudioState, now: datetime, blink_on: bool = False,
+                 reset_pick: int = 0) -> dict[int, Button]:
     p: dict[int, Button] = {i: Button(bg=BG) for i in (0, 1, 2, 5, 6, 7)}  # 안 쓰는 LLM 자리는 빈 칸
     for i, m in enumerate(llms[:3]):
         p[i] = llm_tile(m, now)
@@ -201,15 +233,8 @@ def page_summary(llms: list[LLM], studio: StudioState, now: datetime, blink_on: 
                       bg=BG, accent=best.color)
     else:
         p[3] = Button(bg=BG)
-    # 다음 리셋
-    # 다 남아 있는 창(=아직 안 씀)은 리셋 의미가 없으니 제외
-    resets = [(m.name, l.reset) for m in llms for l in (m.five, m.week)
-              if l and l.reset and l.reset > now and (l.remaining or 0) < 0.999]
-    if resets:
-        name, r = min(resets, key=lambda x: x[1])
-        p[4] = Button(header="다음 리셋", title=until(r, now), sub=name, bg=BG, accent=DIM)
-    else:
-        p[4] = Button(bg=BG)
+    # 다음 리셋 (다 남아 있는 창 = 아직 안 씀 은 제외). 누르면 다른 서비스·창의 리셋을 차례로 (reset_list)
+    p[4] = reset_tile(llms, now, reset_pick)
     # 2줄: 주간 페이스 3칸 + 스튜디오 2칸
     for i, m in enumerate(llms[:3]):
         pc, fc = pace(m.week, now), forecast(m.week, now, waste=True)
