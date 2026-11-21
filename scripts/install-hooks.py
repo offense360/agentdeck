@@ -5,6 +5,7 @@
   python3 scripts/install-hooks.py --codex    # + Codex notify 연결 (기존 notify 는 이어서 실행되도록 감쌈)
   python3 scripts/install-hooks.py --uninstall
   python3 scripts/install-hooks.py --settings /tmp/x.json   # 다른 설정 파일에 (시험용)
+  python3 scripts/install-hooks.py --statusline-only        # Claude 한도 statusline 만 설치 (훅은 그대로)
 
 기존 훅은 건드리지 않고 우리 항목만 추가/제거한다. 바꾸기 전에 .bak-agentdeck 백업을 만든다.
 
@@ -79,6 +80,54 @@ def claude(install: bool) -> None:
     print(t("설치" if install else "제거", "Installed" if install else "Removed"), t("Claude Code 훅:", "Claude Code hooks:"), CLAUDE_SETTINGS)
 
 
+def statusline_command() -> str:
+    """Claude 한도 스냅샷을 남기는 statusline 명령.
+
+    macOS · Linux: statusline-tee.sh. Windows: hooks/statusline_tee.py (bash 가 없을 수 있음).
+    Windows 의 statusLine 은 Git Bash 가 있으면 bash, 없으면 PowerShell 로 돈다. 두 셸 모두에서 따옴표 없이
+    돌도록 공백 없는 경로(저장소의 .venv Python)를 우선 쓴다.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return f'"{os.path.join(ROOT, "statusline-tee.sh")}"'
+    script = os.path.join(ROOT, "hooks", "statusline_tee.py").replace("\\", "/")
+    venv_py = os.path.join(ROOT, ".venv", "Scripts", "python.exe").replace("\\", "/")
+    py = venv_py if os.path.exists(venv_py) else PY[0]
+    if " " in py or " " in script:  # 공백이 있으면 PowerShell 호출 연산자로 (Git Bash 가 없을 때만 맞음)
+        return f'& "{py}" "{script}"'
+    return f"{py} {script}"
+
+
+def is_ours_statusline(sl: dict | None) -> bool:
+    cmd = (sl or {}).get("command") or ""
+    return "statusline_tee.py" in cmd or "statusline-tee.sh" in cmd
+
+
+def statusline(install: bool) -> None:
+    data = json.load(open(CLAUDE_SETTINGS, encoding="utf-8")) if os.path.exists(CLAUDE_SETTINGS) else {}
+    current = data.get("statusLine")
+    if install:
+        if current and not is_ours_statusline(current):
+            # 이미 다른 statusline 이 있으면 덮어쓰지 않는다 (그 명령을 래퍼 뒤에 붙이는 건 직접: 가이드 참고)
+            print(t("이미 다른 statusLine 이 있어 바꾸지 않았어요:", "Another statusLine exists; left unchanged:"),
+                  current.get("command"))
+            return
+        new = {"type": "command", "command": statusline_command()}
+    else:
+        new = None if is_ours_statusline(current) else current
+    if new == current:
+        print(t("변경 없음", "No change"), "statusLine:", CLAUDE_SETTINGS)
+        return
+    if new:
+        data["statusLine"] = new
+    else:
+        data.pop("statusLine", None)
+    backup(CLAUDE_SETTINGS)
+    with open(CLAUDE_SETTINGS, "w", encoding="utf-8") as fp:
+        json.dump(data, fp, indent=2, ensure_ascii=False)
+    print(t("설치" if install else "제거", "Installed" if install else "Removed"), "statusLine:",
+          new["command"] if new else "-")
+
+
 def codex(install: bool) -> None:
     if not os.path.exists(CODEX_CONFIG):
         print(t("Codex 설정 없음:", "No Codex config:"), CODEX_CONFIG)
@@ -108,6 +157,11 @@ def codex(install: bool) -> None:
 
 if __name__ == "__main__":
     uninstall = "--uninstall" in sys.argv
+    if "--statusline-only" in sys.argv:  # Claude 한도 statusline 만 (훅은 그대로)
+        statusline(not uninstall)
+        sys.exit(0)
     claude(not uninstall)
+    if "--statusline" in sys.argv or uninstall:
+        statusline(not uninstall)
     if "--codex" in sys.argv or uninstall:
         codex(not uninstall)
