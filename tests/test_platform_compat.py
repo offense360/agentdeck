@@ -211,6 +211,20 @@ class WindowsHookTest(unittest.TestCase):
         self.assertLess(time.perf_counter() - t0, 1.0)
         self.assertEqual(type(first), type(second))
 
+    def test_foreground_tab_helper_closes_when_idle(self):
+        """한동안 묻지 않으면 PowerShell 도우미를 끄고(메모리), 다시 물으면 새로 띄운다."""
+        helper = pc._ForegroundTab(idle_sec=1)
+        self.addCleanup(helper.close)
+        first = helper.query(timeout=20)
+        self.assertTrue(helper.running)
+        pid = helper._proc.pid
+        time.sleep(3)
+        self.assertFalse(helper.running, "helper should be closed after idle")
+        self.assertFalse(pc.pid_alive(pid), "helper process should be gone")
+        second = helper.query(timeout=20)  # 다시 물으면 새로 띄운다
+        self.assertTrue(helper.running)
+        self.assertEqual(type(first), type(second))
+
     def test_select_tab_no_match_returns_zero(self):
         self.assertEqual(pc.select_terminal_tab(0, "no such tab zzz-agentdeck"), 0)
 

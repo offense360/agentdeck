@@ -14,7 +14,29 @@ LOG = os.path.expanduser("~/.cache/d200/dashboard.log")
 MAX_LOG = 5 * 1024 * 1024
 
 
+def hide_child_consoles() -> None:
+    """콘솔 없는 pythonw 에서 콘솔 프로그램(python · git · ssh …)을 띄우면 매번 새 콘솔 창이 깜빡인다.
+
+    대시보드는 몇 초마다 이런 프로그램을 실행하므로, 창 옵션을 따로 주지 않은 모든 실행에 CREATE_NO_WINDOW 를
+    기본으로 붙인다 (창이 있는 앱 — VS Code 등 — 은 이 옵션의 영향을 받지 않는다).
+    """
+    import subprocess
+
+    if sys.platform != "win32" or getattr(subprocess.Popen, "_agentdeck_hidden", False):
+        return
+    original = subprocess.Popen.__init__
+
+    def init(self, *args, **kwargs):
+        if not kwargs.get("creationflags"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        original(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = init
+    subprocess.Popen._agentdeck_hidden = True
+
+
 def main() -> None:
+    hide_child_consoles()
     os.chdir(ROOT)
     sys.path.insert(0, ROOT)
     os.makedirs(os.path.dirname(LOG), exist_ok=True)

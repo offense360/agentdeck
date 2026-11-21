@@ -286,9 +286,13 @@ while ($true) {
 
 
 class _ForegroundTab:
-    """_WT_FG_LOOP 를 한 번 띄워 두고 묻는다. 프로세스를 매번 만들지 않아서 한 번 묻는 데 수십 ms."""
+    """_WT_FG_LOOP 를 한 번 띄워 두고 묻는다. 프로세스를 매번 만들지 않아서 한 번 묻는 데 수십 ms.
 
-    def __init__(self) -> None:
+    PowerShell 은 메모리를 80MB 넘게 쓰므로, idle_sec 동안 묻지 않으면(깜빡이는 칸이 없으면) 끄고
+    다음에 물을 때 다시 띄운다 (다시 띄우는 데 0.4초쯤).
+    """
+
+    def __init__(self, idle_sec: float = 120) -> None:
         import queue
         import threading
 
@@ -296,6 +300,22 @@ class _ForegroundTab:
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._threading = threading
+        self.idle_sec = idle_sec
+        self._last = 0.0
+        self._idle_timer: threading.Timer | None = None
+
+    def _arm_idle(self) -> None:
+        """마지막으로 물은 뒤 idle_sec 가 지나면 끄도록 타이머를 다시 건다."""
+        if self._idle_timer:
+            self._idle_timer.cancel()
+        self._idle_timer = self._threading.Timer(self.idle_sec + 1, self._close_if_idle)
+        self._idle_timer.daemon = True
+        self._idle_timer.start()
+
+    def _close_if_idle(self) -> None:
+        with self._lock:
+            if self._proc is not None and time.monotonic() - self._last >= self.idle_sec:
+                self.close()
 
     def _start(self) -> None:
         self._proc = subprocess.Popen(
@@ -327,12 +347,20 @@ class _ForegroundTab:
             except (OSError, ValueError, queue.Empty):
                 self.close()  # 멈췄거나 죽었다: 다음에 새로 띄운다
                 return None
+            finally:
+                self._last = time.monotonic()
+                self._arm_idle()
         return ans[2:] if ans.startswith("T:") else None
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
 
     def close(self) -> None:
         if self._proc is not None:
             try:
-                self._proc.kill()
+                self._proc.kill()  # stdout 이 닫히면서 읽기 스레드도 끝난다
+                self._proc.wait(timeout=5)
             except Exception:
                 pass
         self._proc = None
