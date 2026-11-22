@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import signal
 import threading
 import time
@@ -78,6 +79,29 @@ REPEAT_WINDOW = 30  # 같은 칸 반복 누름으로 보는 시간(초)
 SEEN_ACK = platform_compat.IS_WINDOWS and AGENT_SOURCE == "hooks" and CFG.get("seen_ack", True)
 SEEN_POLL_SEC = 2
 RESET_PICK_SEC = 15  # 요약 리셋 칸을 눌러 다른 리셋을 본 뒤 '다음 리셋'으로 돌아가기까지
+# 홈 넓은 칸: 평소엔 시계. 코드가 바뀐 뒤 처음 켜졌을 때만 '새로 바뀐 것'을 이만큼 보여 준다 (넓은 칸을 끝까지 넘기면 바로 시계로)
+HOME_FRESH_SEC = 3600
+HOME_NOTES_SEC = 60  # 시계일 때 넓은 칸을 짧게 누르면 최근 업데이트를 이만큼 보여 준다
+# 홈 첫 화면에 페이지 대신 둘 앱 바로가기 (config "home_apps", 최대 4개). 없으면 원래 홈 그대로.
+#   [{"name": "터미널", "sub": "Windows Terminal", "icon": "terminal", "color": "#9ece6a",
+#     "open": {"windows": "wt.exe", "mac": "/System/Applications/Utilities/Terminal.app"}, "focus": "WindowsTerminal.exe"}]
+#   open: 주소·앱·파일 (OS 별로 다르면 windows/mac/linux 로 나눠 적는다). focus: 이미 켜져 있으면 그 창을 앞으로 (Windows).
+#   짧게 = 켜져 있으면 앞으로 / 없으면 열기, 길게 = 새로 열기. 그 OS 에 open 이 없거나 null 이면 빈 칸.
+HOME_APPS = CFG.get("home_apps") if isinstance(CFG.get("home_apps"), list) else None
+HOME_APP_SLOTS = 4
+APP_BASE = -100  # home_items 의 페이지 자리에 쓰는 앱 번호 (APP_BASE - i)
+EMPTY_SLOT = -3
+
+
+def app_target(app: dict | None) -> str:
+    """이 OS 에서 열 대상. 없으면 ''."""
+    if not isinstance(app, dict):
+        return ""
+    o = app.get("open")
+    if isinstance(o, dict):
+        key = "mac" if platform_compat.IS_MAC else "windows" if platform_compat.IS_WINDOWS else "linux"
+        o = o.get(key)
+    return str(o) if o else ""
 
 
 def signature(s: StudioState) -> tuple:
@@ -176,6 +200,7 @@ class Dashboard:
         self.home_notes: list[str] = []
         self.home_fresh = False
         self.home_note_page = 0
+        self.home_notes_until = 0.0  # 이때까지 홈 넓은 칸에 업데이트 내용 (지나면 시계)
         self.home_extra: list[tuple[int, str, str, str, str]] = []
         self.home_more = False  # 홈 바로가기가 10개를 넘으면 둘째 화면
         self.pres = present.Presenter()
@@ -332,7 +357,11 @@ class Dashboard:
                     self.render()
             elif ev.index < len(items):
                 pg = items[ev.index][0]
-                if pg < 0:  # 더보기 / 처음으로
+                if pg <= APP_BASE:  # 앱 바로가기
+                    self.open_home_app(APP_BASE - pg, held >= LONG_PRESS)
+                elif pg == EMPTY_SLOT:
+                    pass
+                elif pg < 0:  # 더보기 / 처음으로
                     self.home_more = pg == -1
                     self.render()
                 elif pg == AQUA_PAGE:
@@ -340,9 +369,17 @@ class Dashboard:
                     self.render()
                 else:
                     self.go_page(pg)
-        elif self.page == HOME_PAGE and ev.index >= 13:  # 홈 넓은 칸 짧게: 다음 업데이트 내용
+        elif self.page == HOME_PAGE and ev.index >= 13:  # 홈 넓은 칸 짧게: 시계 ↔ 업데이트 내용 (끝까지 넘기면 시계로)
             if held < updater.HOLD_SEC:
-                self.home_note_page += 1
+                now = time.time()
+                if now >= self.home_notes_until:
+                    self.home_note_page, self.home_notes_until = 0, now + HOME_NOTES_SEC
+                else:
+                    self.home_note_page += 1
+                    if self.home_note_page >= self.home_note_pages():
+                        self.home_note_page, self.home_notes_until = 0, 0.0
+                    else:
+                        self.home_notes_until = max(self.home_notes_until, now + HOME_NOTES_SEC)
                 self.render()
         elif self.page in CLOCK_PAGES and ev.index >= 13:  # 시계 넓은 칸 짧게: 업데이트 안내
             st = updater.status()
@@ -408,10 +445,32 @@ class Dashboard:
         if short := shortcuts.home_item(SHORT_PAGE):
             items.append(short)
         items += self.home_extra
+        more, back = (-1, "더보기", "다음 바로가기", "sparkle", "#565f89"), (-2, "처음으로", "첫 바로가기", "home", "#565f89")
+        if HOME_APPS is not None:  # 첫 화면 = 요약~뽀모도로 5칸 + 앱 4칸 + 더보기, 나머지 페이지는 더보기로
+            apps = []
+            for i in range(HOME_APP_SLOTS):
+                a = HOME_APPS[i] if i < len(HOME_APPS) else None
+                if app_target(a):
+                    apps.append((APP_BASE - i, str(a.get("name", "")), str(a.get("sub", "")),
+                                 str(a.get("icon") or "sparkle"), str(a.get("color") or "#7aa2f7")))
+                else:
+                    apps.append((EMPTY_SLOT, "", "", "", ""))
+            return items[5:14] + [back] if self.home_more else items[:5] + apps + [more]
         if len(items) <= 10:
             return items
-        more, back = (-1, "더보기", "다음 바로가기", "sparkle", "#565f89"), (-2, "처음으로", "첫 바로가기", "home", "#565f89")
         return items[9:] + [back] if self.home_more else items[:9] + [more]
+
+    def open_home_app(self, i: int, new: bool) -> None:
+        a = HOME_APPS[i] if HOME_APPS and i < len(HOME_APPS) else None
+        target = app_target(a)
+        if not target:
+            return
+        if not platform_compat.open_app(target, str(a.get("focus") or ""), new=new):
+            self.toast("열지 못했어요", [str(a.get("name", "")), target[:30]], "#f7768e", 4)
+
+    def home_note_pages(self) -> int:
+        n = len(intro.incoming()) if updater.status()["behind"] else len(self.home_notes)
+        return max(1, math.ceil(n / 4))
 
     def render_home(self) -> None:
         if self.home_pick:  # 물멍 / 불멍 고르기: 세로 두 칸짜리 큰 단추 두 개
@@ -432,14 +491,18 @@ class Dashboard:
         body = {}
         items = self.home_items()
         for i in range(10):
-            if i < len(items):
+            if i < len(items) and items[i][0] != EMPTY_SLOT:
                 _, title, sub, icon, color = items[i]
                 body[i] = Button(image=intro.shortcut_tile(title, sub, icon, color))
             else:
                 body[i] = Button(bg="#16161e")
         st = updater.status()
-        small = intro.home_wide(self.home_notes, self.home_fresh, intro.incoming() if st["behind"] else [],
-                                st["behind"], self.home_note_page)
+        if time.time() < self.home_notes_until:
+            small = intro.home_wide(self.home_notes, self.home_fresh, intro.incoming() if st["behind"] else [],
+                                    st["behind"], self.home_note_page)
+        else:  # 평소: 시계 (새 버전이 있으면 시계 칩으로 알린다)
+            small = render_clock(status=self.clock_status())
+            self.rendered_minute = datetime.now().strftime("%H:%M")
         if self.wt_msg and time.time() < self.wt_msg[3]:
             small = render_message(*self.wt_msg[:3])
         navs = nav(self.page, PAGES, self.brightness, ("홈", f"길게: 밝기 {self.brightness}"))
@@ -452,6 +515,7 @@ class Dashboard:
     def play_intro(self) -> None:
         """켜질 때 약 3초 인트로 → 홈. 아무 칸이나 누르면 건너뜀."""
         self.home_notes, self.home_fresh = intro.whats_new(), intro.is_new()
+        self.home_notes_until = time.time() + HOME_FRESH_SEC if self.home_fresh else 0.0
         self.intro_on, self.intro_skip = True, False
         sub = intro.version_text()
         play("intro")

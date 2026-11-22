@@ -196,6 +196,56 @@ def activate_pid(pid: int) -> bool:
     return activate_hwnd(found[0]) if found else False
 
 
+def find_app_window(exe: str) -> int:
+    """Windows: 실행 파일 이름(예: WindowsTerminal.exe)이 같은 보이는 창 중 맨 위 것의 핸들. 없으면 0."""
+    if not IS_WINDOWS or not exe:
+        return 0
+    import ctypes
+    from ctypes import wintypes
+
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    want = exe.lower()
+    found: list[int] = []
+
+    def image_name(pid: int) -> str:
+        h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+            ok = kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+            return buf.value.rsplit("\\", 1)[-1].lower() if ok else ""
+        finally:
+            kernel32.CloseHandle(h)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):  # EnumWindows 는 위에 있는 창부터 돌려준다
+        if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4) or not user32.GetWindowTextLengthW(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if image_name(pid.value) == want:
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found[0] if found else 0
+
+
+def open_app(target: str, focus: str = "", new: bool = False) -> bool:
+    """앱 바로가기: 이미 켜져 있으면 그 창을 앞으로, 없으면 연다. new=True 면 늘 새로 연다.
+
+    focus: Windows 에서 찾을 실행 파일 이름 (예: WindowsTerminal.exe). macOS 는 open 이 이미 이렇게 동작한다.
+    """
+    if not new and focus and IS_WINDOWS:
+        hwnd = find_app_window(focus)
+        if hwnd:
+            activate_hwnd(hwnd)  # 권한 때문에 실패해도 작업 표시줄이 깜빡이므로 새로 열지 않는다
+            return True
+    return open_target(target)
+
+
 def activate_hwnd(hwnd: int) -> bool:
     """Windows: 창 하나를 맨 앞으로 (최소화돼 있으면 복원)."""
     if not IS_WINDOWS or not hwnd:
