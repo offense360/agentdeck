@@ -13,16 +13,32 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
+
+REPLACE_TRIES = 10  # Windows: 대시보드가 읽는 순간엔 덮어쓰기가 거부된다 → 잠깐씩 기다렸다 다시 (최대 약 1초)
 
 
-def main() -> None:
-    data = sys.stdin.buffer.read()
+def save(data: bytes) -> None:
     d = os.path.expanduser("~/.cache/d200")
     os.makedirs(d, exist_ok=True)
     tmp = os.path.join(d, f".claude_status.{os.getpid()}")
     with open(tmp, "wb") as fp:
         fp.write(data)
-    os.replace(tmp, os.path.join(d, "claude_status.json"))
+    for i in range(REPLACE_TRIES):
+        try:
+            os.replace(tmp, os.path.join(d, "claude_status.json"))
+            return
+        except PermissionError:
+            time.sleep(0.02 * (i + 1))
+    os.remove(tmp)
+
+
+def main() -> None:
+    data = sys.stdin.buffer.read()
+    try:
+        save(data)
+    except Exception:
+        pass  # 저장이 안 돼도 기존 statusline 은 그대로 보여 준다
     if len(sys.argv) > 1:  # 기존 statusline 명령으로 이어서
         r = subprocess.run(sys.argv[1:], input=data, capture_output=True, timeout=10)
         sys.stdout.buffer.write(r.stdout)

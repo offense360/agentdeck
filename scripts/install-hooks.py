@@ -112,8 +112,10 @@ def statusline(install: bool) -> None:
                   current.get("command"))
             return
         new = {"type": "command", "command": statusline_command()}
-    else:
-        new = None if is_ours_statusline(current) else current
+    else:  # 우리가 설치한 그대로일 때만 지운다 (기존 statusline 을 뒤에 이어 붙여 직접 고친 것은 그대로 둔다)
+        new = None if (current or {}).get("command") == statusline_command() else current
+        if new and is_ours_statusline(new):
+            print(t("직접 고친 statusLine 이라 그대로 뒀어요:", "Customized statusLine left unchanged:"), new.get("command"))
     if new == current:
         print(t("변경 없음", "No change"), "statusLine:", CLAUDE_SETTINGS)
         return
@@ -161,7 +163,7 @@ if __name__ == "__main__":
         statusline(not uninstall)
         sys.exit(0)
     claude(not uninstall)
-    if "--statusline" in sys.argv or uninstall:
+    if "--statusline" in sys.argv:  # statusline 은 요청할 때만 (--uninstall 만으로는 건드리지 않는다)
         statusline(not uninstall)
     if "--codex" in sys.argv or uninstall:
         codex(not uninstall)

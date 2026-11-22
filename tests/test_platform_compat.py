@@ -127,7 +127,10 @@ class WindowsHookTest(unittest.TestCase):
         rec = json.loads((Path(home) / ".cache" / "d200" / "agents" / "claude-code-t1.json").read_text())
         self.assertEqual(rec["platform"], "win32")
         self.assertEqual(rec["status"], "working")
-        self.assertEqual(rec["project"], ROOT.name)
+        sys.path.insert(0, str(ROOT / "hooks"))
+        import agent_hook
+
+        self.assertEqual(rec["project"], agent_hook._project(str(ROOT)))  # git worktree 면 원래 저장소 이름
         self.assertTrue(pc.pid_alive(rec["pid"]), "recorded pid must outlive the hook (not the shell)")
 
     def test_hook_records_ai_title_for_tab_matching(self):

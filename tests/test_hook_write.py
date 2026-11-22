@@ -58,6 +58,41 @@ class ReplaceRetryTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.tmp))
 
 
+class StatuslineTeeTest(unittest.TestCase):
+    """Claude 한도 스냅샷 저장도 같은 문제: 덮어쓰기가 거부되면 다시 시도하고, 끝내 안 되면 임시 파일을 지운다."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / "hooks"))
+        import statusline_tee
+
+        self.st = statusline_tee
+        self.home = tempfile.mkdtemp()
+        self.env = patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.dir = Path(self.home, ".cache", "d200")
+
+    def test_saves_after_busy(self):
+        real, calls = os.replace, []
+
+        def busy_once(src, dst):
+            calls.append(1)
+            if len(calls) == 1:
+                raise PermissionError(13, "busy")
+            real(src, dst)
+
+        with patch.object(self.st.os, "replace", side_effect=busy_once), patch.object(self.st.time, "sleep"):
+            self.st.save(b'{"rate_limits": {}}')
+        self.assertEqual((self.dir / "claude_status.json").read_bytes(), b'{"rate_limits": {}}')
+        self.assertEqual(list(self.dir.glob(".claude_status.*")), [])
+
+    def test_gives_up_without_leftover(self):
+        with patch.object(self.st.os, "replace", side_effect=PermissionError(13, "busy")), \
+                patch.object(self.st.time, "sleep"):
+            self.st.save(b"{}")
+        self.assertEqual(list(self.dir.glob(".claude_status.*")), [])
+
+
 class ScanCleanupTest(unittest.TestCase):
     def test_old_tmp_removed_fresh_kept(self):
         d = tempfile.mkdtemp()
