@@ -44,9 +44,16 @@ def alive(pid):
     except Exception:
         return False
 out = []
+for p in glob.glob(os.path.expanduser("%s/*.json.*")):  # 훅이 덮어쓰다 남긴 임시 파일 (1분 지나면 버려진 것)
+    try:
+        if time.time() - os.path.getmtime(p) > 60:
+            os.remove(p)
+    except Exception:
+        pass
 for p in glob.glob(os.path.expanduser("%s/*.json")):
     try:
-        d = json.load(open(p))
+        with open(p) as f:  # 바로 닫는다: 열려 있는 동안엔 Windows 에서 훅이 덮어쓰지 못한다
+            d = json.load(f)
         if not alive(int(d.get("pid") or 0)) or time.time() - d.get("updated", 0) > %d:
             os.remove(p)
             continue
@@ -54,7 +61,7 @@ for p in glob.glob(os.path.expanduser("%s/*.json")):
     except Exception:
         pass
 print(json.dumps(out))
-''' % (AGENTS_DIR, STALE_SEC)
+''' % (AGENTS_DIR, AGENTS_DIR, STALE_SEC)
 
 # 세션 정보 (term id → 기록) : 눌렀을 때 이동에 쓴다
 _sessions: dict[str, dict] = {}

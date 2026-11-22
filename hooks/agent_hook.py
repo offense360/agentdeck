@@ -136,14 +136,38 @@ def _write(rec: dict) -> None:
     path = os.path.join(DIR, rec["id"].replace("/", "_") + ".json")
     old = {}
     try:
-        old = json.load(open(path))
+        with open(path) as fp:  # 바로 닫는다: 열려 있는 동안엔 Windows 에서 다른 훅이 덮어쓰지 못한다
+            old = json.load(fp)
     except Exception:
         pass
     rec = {**old, **rec, "started": old.get("started", rec["updated"])}
     tmp = path + f".{os.getpid()}"
     with open(tmp, "w") as fp:
         json.dump(rec, fp)
-    os.replace(tmp, path)
+    _replace(tmp, path)
+
+
+REPLACE_TRIES = 20  # 0.02 → 0.2초씩 늘려 가며 최대 약 2초 (훅 제한 시간 5초 안)
+
+
+def _replace(tmp: str, path: str) -> None:
+    """tmp 로 path 를 덮어쓴다.
+
+    Windows 는 다른 프로세스(대시보드 · 같은 세션의 다른 훅)가 path 를 읽는 순간엔 덮어쓰기를 거부한다
+    (PermissionError). macOS · Linux 는 늘 한 번에 성공한다. 잠깐 기다렸다 다시 하고, 끝내 안 되면 임시 파일을 지운다.
+    """
+    for i in range(REPLACE_TRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == REPLACE_TRIES - 1:
+                break
+            time.sleep(min(0.2, 0.02 * (i + 1)))
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
 
 
 def _base(agent: str, session: str, cwd: str) -> dict:
