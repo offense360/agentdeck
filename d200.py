@@ -24,7 +24,6 @@ from typing import Callable
 import hid
 from PIL import Image, ImageDraw, ImageFont
 
-import platform_compat
 from i18n import t
 
 VID, PID = 0x2207, 0x0019
@@ -47,7 +46,17 @@ IN_DEVICE_INFO = 0x0303
 USAGE_PAGE_CONSUMER = 0x0C  # 인터페이스 0 의 Consumer Control 컬렉션 = 화면·명령 채널
 
 
-FONT_PATH = platform_compat.font_file("kr")[0]  # 한글 지원 (macOS Apple SD Gothic Neo, Windows 맑은 고딕)
+def _pick_font() -> str:
+    """한글이 되는 시스템 폰트. macOS 가 먼저, 그다음 Windows · Linux."""
+    candidates = (
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",  # macOS
+        r"C:\Windows\Fonts\malgun.ttf",  # Windows (맑은 고딕)
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",  # Linux
+    )
+    return next((p for p in candidates if os.path.exists(p)), candidates[0])
+
+
+FONT_PATH = _pick_font()  # 한글 지원
 
 
 @dataclass(frozen=True)
@@ -390,35 +399,6 @@ def build_zip(buttons: dict[int, Button], small_png: bytes | None = None,
     raise RuntimeError("could not build firmware-safe zip")
 
 
-def parse_button(data: bytes, profile: DeviceProfile) -> InputEvent:
-    """버튼 입력 데이터 [state, index, kind/pressed, action] 를 이벤트로."""
-    state, index = data[0], data[1]
-    if profile.wide_press_byte2 and index >= WIDE_INDEX and data[2] in (0x00, 0x01):
-        return InputEvent(index, "button", "press" if data[2] == 0x01 else "release", state)
-    kind = "encoder" if data[2] == 0x02 else "button"
-    action = {0x01: "press", 0x02: "left", 0x03: "right"}.get(data[3], "release")
-    return InputEvent(index, kind, action, state)
-
-
-def _find_hid(devices: list[dict] | None = None) -> dict | None:
-    """화면·명령용 HID 항목을 고른다.
-
-    인터페이스 0 이 화면·명령 채널이다. Windows hidapi 는 같은 인터페이스를 컬렉션(usage page)마다
-    따로 보여주므로, 여러 개면 Consumer Control(0x0C) 컬렉션을 우선한다.
-    """
-    if devices is None:
-        devices = hid.enumerate(VID, PID)
-    cands = [d for d in devices if d.get("interface_number") == 0]
-    if not cands:
-        return None
-    return next((d for d in cands if d.get("usage_page") == USAGE_PAGE_CONSUMER), cands[0])
-
-
-def find_device_path(devices: list[dict] | None = None) -> bytes | None:
-    info = _find_hid(devices)
-    return info["path"] if info else None
-
-
 def _load_libusb():
     """libusb 를 찾으면 돌려준다 (없으면 None — 그때는 깨우기를 건너뛴다)."""
     import ctypes
@@ -464,6 +444,36 @@ def revive_stuck_device(lib=None) -> bool:
         lib.libusb_exit(ctx)
 
 
+def parse_button(data: bytes, profile: DeviceProfile) -> InputEvent:
+    """버튼 입력 데이터 [state, index, kind/pressed, action] 를 이벤트로."""
+    state, index = data[0], data[1]
+    if profile.wide_press_byte2 and index >= WIDE_INDEX and data[2] in (0x00, 0x01):
+        return InputEvent(index, "button", "press" if data[2] == 0x01 else "release", state)
+    kind = "encoder" if data[2] == 0x02 else "button"
+    action = {0x01: "press", 0x02: "left", 0x03: "right"}.get(data[3], "release")
+    return InputEvent(index, kind, action, state)
+
+
+def _find_hid(devices: list[dict] | None = None) -> dict | None:
+    """화면·명령용 HID 항목을 고른다.
+
+    인터페이스 0 이 화면·명령 채널이다. Windows hidapi 는 같은 인터페이스를 컬렉션(usage page)마다
+    따로 보여주므로, 여러 개면 Consumer Control(0x0C) 컬렉션을 우선한다.
+    """
+    if devices is None:
+        devices = hid.enumerate(VID, PID)
+    cands = [d for d in devices if d.get("interface_number") == 0]
+    if not cands:
+        return None
+    return next((d for d in cands if d.get("usage_page") == USAGE_PAGE_CONSUMER), cands[0])
+
+
+def find_device_path(devices: list[dict] | None = None) -> bytes | None:
+    """화면·명령용 HID 경로를 돌려준다."""
+    info = _find_hid(devices)
+    return info["path"] if info is not None else None
+
+
 RECONNECT_POLL_SEC = 2.0  # 장치가 없을 때 다시 찾는 간격
 RECONNECT_SETTLE_SEC = 1.0  # 다시 연 뒤 펌웨어가 준비될 때까지 기다렸다가 화면을 보낸다
 
@@ -487,6 +497,7 @@ class D200:
         self.dev = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._last_revive_at = 0.0
         self.disconnected = threading.Event()  # reconnect=False 에서만 켜진다 (멈춤 신호)
         self.connected = threading.Event()  # 지금 장치가 열려 있는지
         self._brightness: int | None = None  # 다시 연결할 때 복원
@@ -509,15 +520,20 @@ class D200:
 
     # ---- 연결 ----
     def _open(self) -> bool:
-        """장치를 찾아 연다. 없거나 열 수 없으면 False. 디버그 모양으로 멈춰 있으면 USB 리셋으로 깨운다."""
+        """장치를 찾아 연다. 없거나 열 수 없으면 False."""
         info = _find_hid()
-        if not info and revive_stuck_device():
-            for _ in range(REVIVE_WAIT_S * 2):  # 리셋 뒤 HID 가 올라올 때까지 잠깐 기다린다
-                time.sleep(0.5)
-                info = _find_hid()
-                if info:
-                    break
-        if not info:
+        if info is None:
+            can_revive = self._last_revive_at == 0.0 or time.monotonic() - self._last_revive_at >= 10.0
+            if can_revive and revive_stuck_device():
+                self._last_revive_at = time.monotonic()
+                for _ in range(REVIVE_WAIT_S * 2):  # 리셋 뒤 HID 가 올라올 때까지 기다린다
+                    if self._stop.is_set():
+                        return False
+                    time.sleep(0.5)
+                    info = _find_hid()
+                    if info is not None:
+                        break
+        if info is None or self._stop.is_set():
             return False
         dev = hid.device()
         try:
@@ -706,6 +722,8 @@ class D200:
 
     def close(self) -> None:
         self._stop.set()
+        if self._restore_timer:
+            self._restore_timer.cancel()
         time.sleep(0.2)
         self._drop()
 
@@ -757,7 +775,7 @@ if __name__ == "__main__":
     deck.start()
     deck.set_brightness(80)
     deck.set_buttons(buttons, small_png=wide_png)
-    deck.set_small_window(mode=SMALL_BACKGROUND)  # dashboard 와 같은 모드. D200H 프로파일이면 보내지 않음
+    deck.set_small_window(mode=SMALL_BACKGROUND)  # dashboard 와 같은 모드. D200H 프로파일도 모드 2 를 보낸다
     print(f"=== listening for button events for {duration:.0f}s ===", flush=True)
     try:
         time.sleep(duration)
