@@ -28,7 +28,7 @@ from i18n import t  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = os.path.join(ROOT, "hooks", "agent_hook.py")
-if platform_compat.IS_WINDOWS:  # Claude Code 는 Windows 에서 훅을 Git Bash 로 실행한다: 경로는 / 로
+if platform_compat.IS_WINDOWS:  # 경로는 / 로 (Git Bash · PowerShell · Python 모두 읽는다)
     HOOK = HOOK.replace("\\", "/")
 PY = platform_compat.python_cmd()  # macOS: python3 / Windows: 실제 Python 경로
 CLAUDE_CMD = f'python3 "{HOOK}" claude' if PY == ["python3"] else f'"{PY[0]}" "{HOOK}" claude'
